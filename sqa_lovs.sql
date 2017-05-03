@@ -1,4 +1,5 @@
 
+
 set lines 180
 set pages 400
 set echo on
@@ -6,7 +7,7 @@ set feedback on
 
 SET DEFINE OFF;
 
-CREATE OR REPLACE PACKAGE     SQA_LOVS
+CREATE OR REPLACE PACKAGE  SQA_LOVS
 IS
 
 /**********************************************************************
@@ -36,11 +37,11 @@ IS
    4. Add completed = 0 to reassignment in order to keep from reassinging close orders
    5. Add ASSIGNMENTS to backlog   
    
-     Version # 3.8
+  Version # 3.8
   Update SQA td data Archive process
   add    SQA td data etl archive process
   update SQA td Selection process
-
+  
 ****************************************************************/
 
 
@@ -599,6 +600,7 @@ TYPE ICC_BACKLOG_LIST IS RECORD
 );
 
 
+
 function apex_error_handling ( p_error in apex_error.t_error ) return apex_error.t_error_result;
 
 PROCEDURE PULL_WORKORDER_DATA;
@@ -725,8 +727,10 @@ P638_COMMENTS        VARCHAR2,
 P638_REVIEWED_BY     VARCHAR2
 );
 
+procedure  REMOVE_SQA_ETL_DATA;
 
 END;
+
 /
 
 SHOW ERRORS;
@@ -923,19 +927,26 @@ IS
 
  A        SQA_DATA_ARCH;
 
- RCODE    NUMBER;
- SQLROWS  NUMBER;
- MSG      VARCHAR2(1000  BYTE);
- SQL_STMT VARCHAR2(32000 BYTE);
- SEL_STMT VARCHAR2(32000 BYTE);
- DEL_STMT VARCHAR2(32000 BYTE);
-
- GC       GenRefCursor;
+ RCODE           NUMBER;
+ SQLROWS         NUMBER;
+ MSG             VARCHAR2(1000  BYTE);
+ SQL_STMT        VARCHAR2(32000 BYTE);
+ SEL_STMT        VARCHAR2(32000 BYTE);
+ DEL_STMT        VARCHAR2(32000 BYTE);
+ P_ARCHIVE_DAYS  NUMBER;
+ 
+ GC              GenRefCursor;
 
 BEGIN
  SQLROWS := 0;
  RCODE   := 0;
  MSG     := 'Starting..';
+
+
+    SELECT TO_NUMBER(VARIABLE_VALUE)
+     INTO  P_ARCHIVE_DAYS
+     FROM  SQA_SYS_VARIABLES
+     WHERE VARIABLE_NAME = 'ARCHIVE_DAYS';
 
 
           INSERT INTO BOA_PROCESS_LOG
@@ -949,7 +960,7 @@ BEGIN
     VALUES ( 'SQA_LOVS', 'ARCHIVE_SQA_DATA',SYSDATE, RCODE, MSG);
     COMMIT;
 
-SEL_STMT := ' SELECT PID, ROWID FROM SQA_TD_DATA WHERE DATA_DT <  :A ';
+SEL_STMT := ' SELECT PID, ROWID FROM SQA_TD_DATA WHERE COMPLETED_DT <  :A ';
 DEL_STMT := ' DELETE FROM SQA_TD_DATA WHERE ROWID = :B';
 
 SQL_STMT := 'INSERT INTO SQA_TD_DATA_ARCHIVE (';
@@ -971,7 +982,7 @@ SQL_STMT := SQL_STMT||' WHERE A.PID = :A ';
 SQL_STMT := SQL_STMT||'  AND  B.PID IS NULL';
 
 
-OPEN GC FOR SEL_STMT USING (SYSDATE - 90);
+OPEN GC FOR SEL_STMT USING  (TRUNC(SYSDATE) - P_ARCHIVE_DAYS);
 
 LOOP
     FETCH GC BULK COLLECT INTO A.PID, A.ROWIDS LIMIT 10000;
@@ -2279,7 +2290,7 @@ INSERT INTO  SQA_VENDOR_HISTORY ( VENDOR_ID, REVIEWED_BY, NBR_REVIEWED,      REV
                        VALUES ( P_VENDOR_ID, P_APP_USER,  P_NUMBER_TO_REVIEW,GV_CURRENT_DATE, 0, 0, 0,0) RETURNING HISTORY_ID INTO P_REVIEW_ID;
 
                        COMMIT;
-
+                       
 --LIMIT P_NUMBER_TO_REVIEW;
 
 
@@ -2288,69 +2299,49 @@ SQLROWS  := 0;
 
 UPD_STMT := 'UPDATE SQA_TD_DATA  SET WORKING = :A,  SQA_TD_REP = :B,  REVIEW_ID = :C,  BATCH_NO = :D  WHERE PID = :E';
 
-SQL_STMT := 'SELECT PID, WORKING, SQA_TD_REP, REVIEW_ID,  0 AS BATCH_NO, COMPLETED_DT, RK ';
+SQL_STMT := 'SELECT PID, NVL(R.WORKING,''N'')AS WORKING, NVL(R.SQA_TD_REP,''NOT-ASSIGNED'')  AS SQA_TD_REP, R.REVIEW_ID,  0 AS BATCH_NO, R.COMPLETED_DT, R.RK ';
 SQL_STMT := SQL_STMT||'  FROM ( SELECT PID, WORKING, SQA_TD_REP, REVIEW_ID, COMPLETED_DT , RANK() OVER (PARTITION BY ADD_1, CITY,ST, ZIP ORDER BY COMPLETED_DT DESC, ROWNUM) RK ';
 SQL_STMT := SQL_STMT||'          FROM SQA_TD_DATA  ';
-SQL_STMT := SQL_STMT||'          WHERE  WORKING IS NULL';
-SQL_STMT := SQL_STMT||'           AND   SQA_TD_REP IS NULL';
-SQL_STMT := SQL_STMT||'           AND   CONTRACTOR = :A';
-SQL_STMT := SQL_STMT||'           AND   REPORT_SEGMENT = :B';
-SQL_STMT := SQL_STMT||'           AND   COMPLETED_DT >= :C ) ';
-SQL_STMT := SQL_STMT||'  WHERE   RK  = :R ';
+SQL_STMT := SQL_STMT||'           where   CONTRACTOR = :A';
+SQL_STMT := SQL_STMT||'           AND     REPORT_SEGMENT = :B';
+SQL_STMT := SQL_STMT||'           AND     COMPLETED_DT >= :C ) R ';
+SQL_STMT := SQL_STMT||' ORDER BY R.RK ';
+    
+         OPEN GC FOR SQL_STMT USING  P_VENDOR_NAME, P_SEGMENTS, P_START_COUNTER_DATE;
+             FETCH GC BULK COLLECT INTO TD.PID,
+                                        TD.WORKING,
+                                        TD.SQA_TD_REP,
+                                        TD.REVIEW_ID,
+                                        TD.BATCH_NO,
+                                        TD.COMPLETED_DT,
+                                        TD.rk;                        
+         CLOSE GC;
+     
+          
 
-
-WHILE ( SQLROWS < P_NUMBER_TO_REVIEW )
-    LOOP
-         GROUP_NO := GROUP_NO + 1;
-
-    OPEN GC FOR SQL_STMT USING  P_VENDOR_NAME, P_SEGMENTS, P_START_COUNTER_DATE, GROUP_NO;
-        FETCH GC BULK COLLECT INTO TD.PID,
-                                   TD.WORKING,
-                                   TD.SQA_TD_REP,
-                                   TD.REVIEW_ID,
-                                   TD.BATCH_NO,
-                                   TD.COMPLETED_DT,
-                                   TD.rk;
-
-    CLOSE GC;
-
-
-           IF  (TD.PID.COUNT = 0)
-               THEN
-                   SQLROWS := P_NUMBER_TO_REVIEW;
-           END IF;
-
-            FOR i IN 1..TD.PID.COUNT loop
+            FOR i IN 1..TD.PID.COUNT loop               
                 EXIT WHEN SQLROWS >= P_NUMBER_TO_REVIEW;
-
-
-
-                IF (TD.COMPLETED_DT(i) > ( GV_CURRENT_DATE  - 60) )
-                    THEN
+                 
+                IF (TD.COMPLETED_DT(i) > ( GV_CURRENT_DATE  - 60) AND 
+                    TD.WORKING(i)      = 'N'  AND 
+                    TD.SQA_TD_REP(i)   = 'NOT-ASSIGNED' ) 
+                THEN 
                        TD.WORKING(i)    := 'Y';
                        TD.SQA_TD_REP(i) := UPPER(P_APP_USER);
                        TD.REVIEW_ID(i)  := P_REVIEW_ID;
                        TD.BATCH_NO(i)   := P_BATCH_NO;
-                       SQLROWS          := SQLROWS + 1;
+                       SQLROWS          := SQLROWS + 1;                                        
                 END IF;
+                
+            END LOOP;                               
 
-            END LOOP;
 
-
-        FOR i IN 1..TD.PID.COUNT loop
-
-           IF  ( TD.BATCH_NO(i)  > 0 ) THEN
+        FORALL i IN 1..TD.PID.COUNT           
                 EXECUTE IMMEDIATE UPD_STMT USING  TD.WORKING(i), TD.SQA_TD_REP(i), TD.REVIEW_ID(i), TD.BATCH_NO(i), TD.PID(i);
-           END IF;
-
-        END LOOP;
-
+                                         
         COMMIT;
 
-END LOOP;
-
-
-
+       
           INSERT INTO BOA_PROCESS_LOG
                 (
                   PROCESS,
@@ -2361,7 +2352,6 @@ END LOOP;
                 )
     VALUES ( 'SQA_LOVS', 'SET_REP_WORK_QUEUE',SYSDATE, SQLROWS, 'Create Review univ');
     COMMIT;
-
 
 
           INSERT INTO SQA_TD_DATA_DETAILS
@@ -5592,8 +5582,7 @@ R                  SQA_LOVS.SQA_TD_DATA_ETL_REC;
 GC                 SQA_LOVS.GenRefCursor;
 SQL_STMT           VARCHAR2(32000 BYTE);
 GV_CURRENT_DATE    DATE;
-GV_CURRENT_MINUS_2 DATE;
-GV_CURRENT_PLUS_2  DATE;
+GV_CURRENT_MINUS   DATE;
 
 
 BEGIN
@@ -5603,20 +5592,24 @@ SELECT TO_DATE(VARIABLE_VALUE,'MM/DD/YYYY')
  FROM  SQA_SYS_VARIABLES
 WHERE VARIABLE_NAME = 'Current_date';
 
-GV_CURRENT_MINUS_2 :=  GV_CURRENT_DATE - 3;
-GV_CURRENT_PLUS_2  :=  GV_CURRENT_DATE + 3;
+GV_CURRENT_MINUS   :=  GV_CURRENT_DATE - 7;
+
+
 CNT := 0;
 
-SQL_STMT := 'SELECT A.SPIPROPERTYID,A.LOANNUMBER,A.LOANTYPE,A.CLIENT,A.ADDRESSLINE1,A.ADDRESSLINE2,A.CITY,A.STATE,A.ZIP,A.ORDERNUMBER,A.ORDERDATE,A.WORKCODE,A.COMPLETEDDATE,A.CONTRACTORCODE,A.MORTGAGORNAME,A.SALEDATE,A.SECUREDDATE,A.WINTERIZEDDATE,';
-SQL_STMT := SQL_STMT||' A.INITIALICCDATE,A.LASTICCDATE,A.CONVEYDATE,A.INVESTORNUMBER,A.BILLINGCODE,A.REPORT_SEGMENT,A.WORK_GROUP,A.NBR_QUESTIONS,A.PID';
-SQL_STMT := SQL_STMT||' FROM SQA_TD_DATA_ETL a';
-SQL_STMT := SQL_STMT||' LEFT JOIN ( SELECT PID FROM SQA_TD_DATA ) B ON (A.PID = B.PID)';
-SQL_STMT := SQL_STMT||' WHERE  B.PID  is null';
-SQL_STMT := SQL_STMT||' and A.COMPLETEDDATE BETWEEN :A AND :B  ';
-SQL_STMT := SQL_STMT||' and A.COMPLETEDDATE IS NOT NULL ';
-SQL_STMT := SQL_STMT||' AND  A.REPORT_SEGMENT NOT IN (''SKIP'')';
+SQL_STMT := 'SELECT T.SPIPROPERTYID,T.LOANNUMBER,T.LOANTYPE,T.CLIENT,T.ADDRESSLINE1,T.ADDRESSLINE2,T.CITY,T.STATE,T.ZIP,T.ORDERNUMBER,T.ORDERDATE,T.WORKCODE,T.COMPLETEDDATE,T.CONTRACTORCODE,T.MORTGAGORNAME,T.SALEDATE,T.SECUREDDATE,T.WINTERIZEDDATE,';
+SQL_STMT := SQL_STMT||' T.INITIALICCDATE,T.LASTICCDATE,T.CONVEYDATE,T.INVESTORNUMBER,T.BILLINGCODE,T.REPORT_SEGMENT,T.WORK_GROUP,T.NBR_QUESTIONS,T.PID';
+SQL_STMT := SQL_STMT||' FROM (SELECT A.SPIPROPERTYID,A.LOANNUMBER,A.LOANTYPE,A.CLIENT,A.ADDRESSLINE1,A.ADDRESSLINE2,A.CITY,A.STATE,A.ZIP,A.ORDERNUMBER,A.ORDERDATE,A.WORKCODE,A.COMPLETEDDATE,A.CONTRACTORCODE,A.MORTGAGORNAME,A.SALEDATE,A.SECUREDDATE,A.WINTERIZEDDATE, ';
+SQL_STMT := SQL_STMT||'              A.INITIALICCDATE,A.LASTICCDATE,A.CONVEYDATE,A.INVESTORNUMBER,A.BILLINGCODE,A.REPORT_SEGMENT,A.WORK_GROUP,A.NBR_QUESTIONS,A.PID';
+SQL_STMT := SQL_STMT||'  FROM SQA_TD_DATA_ETL a';
+SQL_STMT := SQL_STMT||'  LEFT JOIN ( SELECT PID FROM SQA_TD_DATA ) B ON (A.PID = B.PID)';
+SQL_STMT := SQL_STMT||'  WHERE  B.PID  is null';
+SQL_STMT := SQL_STMT||'  and A.COMPLETEDDATE BETWEEN :A AND :B ';
+SQL_STMT := SQL_STMT||'  and A.COMPLETEDDATE IS NOT NULL ';
+SQL_STMT := SQL_STMT||'  AND  A.REPORT_SEGMENT NOT IN (''SKIP'') ) T ';
+SQL_STMT := SQL_STMT||'  ORDER BY T.COMPLETEDDATE ';
 
-OPEN GC FOR SQL_STMT USING GV_CURRENT_MINUS_2,  GV_CURRENT_PLUS_2;
+OPEN GC FOR SQL_STMT USING  GV_CURRENT_MINUS, GV_CURRENT_DATE ;
       LOOP
 
       FETCH GC BULK COLLECT INTO
@@ -5802,7 +5795,7 @@ FOR i in 1..m.mo.count loop
          A.BILLINGCODE
          FROM SQA_TD_DATA_ETL  A
          Where a.contractorcode in ('P5GRS','ABRREO','CALRGR','NAMGR2','PSEGRS','BMVREO','RJRRGR','JESRGR')
-           AND A.COMPLETEDDATE BETWEEN  TO_DATE('07/01/2016','MM/DD/YYYY') AND TO_DATE('07/31/2016','MM/DD/YYYY');
+           AND A.COMPLETEDDATE BETWEEN  TO_DATE('01/01/2017','MM/DD/YYYY') AND TO_DATE('01/31/2017','MM/DD/YYYY');
  commit;
 
 end loop;
@@ -7580,22 +7573,22 @@ DEL_STMT  := 'DELETE SQA_VENDOR_LIST WHERE VENDOR_ID = :A';
 SQL_STMT := ' SELECT  A.VENDOR_ID,  A.VENDOR_CODE, A.SEGMENTS ';
 SQL_STMT := SQL_STMT||' FROM SQA_VENDOR_LIST A ';
 SQL_STMT := SQL_STMT||' LEFT JOIN ( SELECT CONTRACTOR, REPORT_SEGMENT,  Latest_job';
-SQL_STMT := SQL_STMT||'             FROM ( SELECT Contractor, Report_Segment, max(COMPLETED_DT) latest_job from sqa_td_data  group by contractor, report_segment ) ';
+SQL_STMT := SQL_STMT||'             FROM ( SELECT Contractor, Report_Segment, max(COMPLETED_DT) latest_job from sqa_td_data  group by contractor, report_segment ) ';  
 SQL_STMT := SQL_STMT||'             WHERE LATEST_JOB < ( GV_CURRENT_DATE - 30 ) ';
-SQL_STMT := SQL_STMT||'           ) B ON ( A.VENDOR_CODE = B.CONTRACTOR AND A.SEGMENTS = B.REPORT_SEGMENT)';
-SQL_STMT := SQL_STMT||'  WHERE  A.VENDOR_CODE = B.CONTRACTOR ';
+SQL_STMT := SQL_STMT||'           ) B ON ( A.VENDOR_CODE = B.CONTRACTOR AND A.SEGMENTS = B.REPORT_SEGMENT)';    
+SQL_STMT := SQL_STMT||'  WHERE  A.VENDOR_CODE = B.CONTRACTOR '; 
 SQL_STMT := SQL_STMT||'    AND  A.SEGMENTS    = B.REPORT_SEGMENT ';
 
 OPEN GC FOR SQL_STMT;
      FETCH GC BULK COLLECT INTO QP.VENDOR_ID, QP.VENDOR_CODE, QP.SEGMENTS;
      CNT := QP.VENDOR_ID.COUNT;
-
+      
      FOR I in 1.. qp.vendor_id.count loop
-
+           
           EXECUTE IMMEDIATE DEL_STMT USING QP.VENDOR_ID(I);
-
+          
      end loop;
-
+       
 CLOSE GC;
              commit;
 
@@ -7616,6 +7609,7 @@ END;
 /***************************************************************
 
  **************************************************************/
+
 PROCEDURE QAP_ICC_REVIEW_CORRECTIONS
 (
 P638_PID             NUMBER,
@@ -7715,6 +7709,148 @@ EXCEPTION
 
 END;
 
+/*************************************************
+
+
+**************************************************/
+
+procedure  REMOVE_SQA_ETL_DATA
+IS
+
+TYPE  GenRefCursor is REF CURSOR;
+TYPE rowidArray is table of rowid index by binary_integer;
+
+TYPE SQA_DATA_ARCH IS RECORD (
+  PID    DBMS_SQL.NUMBER_TABLE,
+  ROWIDS  rowidArray
+);
+
+
+GC GenRefCursor;
+R SQA_DATA_ARCH;
+
+
+CNT          NUMBER;
+DEL_STMT     VARCHAR2(32000 BYTE);
+SQL_STMT     VARCHAR2(32000 BYTE); 
+
+CUTOFF_DAYS  number;
+ 
+BEGIN
+
+
+    SELECT TO_NUMBER(VARIABLE_VALUE)
+     INTO  CUTOFF_DAYS
+     FROM  SQA_SYS_VARIABLES
+     WHERE VARIABLE_NAME = 'CUTOFF_DAYS';
+
+
+        BEGIN 
+
+              EXECUTE IMMEDIATE 'DROP INDEX SQA_TD_DATA_ETL_CMPT ';
+        EXCEPTION 
+             WHEN OTHERS THEN
+             
+             NULL;
+        END;  
+     
+        BEGIN
+
+        EXECUTE IMMEDIATE 'DROP INDEX SQA_TD_DATA_ETL_CONTR';
+
+        EXCEPTION 
+             WHEN OTHERS then 
+             NULL;
+        END;
+
+
+CNT := 0;
+DEL_STMT := 'DELETE SQA_TD_DATA_ETL WHERE ROWID = :B';
+
+SQL_STMT := 'SELECT PID, ROWID';
+SQL_STMT := SQL_STMT||' FROM SQA_TD_DATA_ETL ';
+SQL_STMT := SQL_STMT||' WHERE  COMPLETEDDATE <  :A ';
+
+OPEN GC FOR SQL_STMT USING (TRUNC(SYSDATE) - CUTOFF_DAYS) ;
+      LOOP
+
+            FETCH GC BULK COLLECT INTO
+                                   R.PID,
+                                   R.ROWIDS
+                                   LIMIT 100000;
+            EXIT WHEN R.PID.count = 0;
+
+               CNT := CNT + R.PID.COUNT;
+
+               FORall k in 1..R.PID.COUNT
+                    EXECUTE IMMEDIATE DEL_STMT USING R.ROWIDS(k);                                  
+
+              commit;
+                
+              INSERT INTO BOA_PROCESS_LOG
+                    (
+                      PROCESS,
+                      SUB_PROCESS,
+                      ENTRYDTE,
+                      ROWCOUNTS,
+                      MESSAGE
+                    )
+             VALUES ( 'SQA_LOVS', 'SQA_TD_DATA_ETL',SYSDATE, CNT, 'Removing DATA');
+             COMMIT;
+
+
+      END LOOP;
+
+CLOSE GC;
+
+    BEGIN 
+
+          EXECUTE IMMEDIATE 'CREATE INDEX SQA_TD_DATA_ETL_CMPT ON SQA_TD_DATA_ETL (COMPLETEDDATE)';
+    EXCEPTION 
+         WHEN OTHERS THEN
+         
+         NULL;
+    END;  
+     
+
+    BEGIN
+
+    EXECUTE IMMEDIATE 'CREATE INDEX SQA_TD_DATA_ETL_CONTR ON SQA_TD_DATA_ETL (CONTRACTORCODE)';
+
+    EXCEPTION 
+         WHEN OTHERS then  
+         NULL;
+    END;
+
+
+    BEGIN
+      SYS.DBMS_STATS.GATHER_TABLE_STATS (
+          OwnName        => 'RDM'
+         ,TabName        => 'SQA_TD_DATA_ETL'
+        ,Estimate_Percent  => 90
+        ,Method_Opt        => 'FOR ALL COLUMNS SIZE 1'
+        ,Degree            => 4
+        ,Cascade           => FALSE
+        ,No_Invalidate     => FALSE);
+    END;
+
+
+
+
+          INSERT INTO BOA_PROCESS_LOG
+                (
+                  PROCESS,
+                  SUB_PROCESS,
+                  ENTRYDTE,
+                  ROWCOUNTS,
+                  MESSAGE
+                )
+         VALUES ( 'SQA_LOVS', 'SQA_TD_DATA_ETL',SYSDATE, CNT, 'Complete');
+         COMMIT;
+
+
+END;
+
 
 
 BEGIN
@@ -7724,6 +7860,4 @@ BEGIN
 END;
 
 /
-SHOW ERRORS;
-
-spool off;
+SHOW ERRORS
