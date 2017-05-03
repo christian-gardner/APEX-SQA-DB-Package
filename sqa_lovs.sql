@@ -35,6 +35,12 @@ IS
    3. correct between function of report: use both parms not just one
    4. Add completed = 0 to reassignment in order to keep from reassinging close orders
    5. Add ASSIGNMENTS to backlog   
+   
+     Version # 3.8
+  Update SQA td data Archive process
+  add    SQA td data etl archive process
+  update SQA td Selection process
+
 ****************************************************************/
 
 
