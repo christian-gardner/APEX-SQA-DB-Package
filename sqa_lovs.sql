@@ -42,6 +42,9 @@ IS
   add    SQA td data etl archive process
   update SQA td Selection process
   
+  Version  # 3.9 
+  Update the Reassignment process
+  
 ****************************************************************/
 
 
